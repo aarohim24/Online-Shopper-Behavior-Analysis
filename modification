@@ -1,0 +1,144 @@
+"""
+Technologies Used:
+- pandas, numpy: data manipulation
+- sklearn: machine learning (scaling, clustering, classification, hyperparameter tuning, evaluation)
+- transformers: sentiment analysis pipeline
+- plotly, seaborn, matplotlib: data visualization
+- joblib: saving the trained model
+"""
+
+import pandas as pd
+import numpy as np
+from sklearn.cluster import KMeans
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from transformers import pipeline
+import plotly.express as px
+import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+import seaborn as sns
+import joblib
+from datetime import datetime, timedelta
+import random
+
+np.random.seed(42)
+n_sessions = 1000
+data = {
+    'session_id': range(1, n_sessions + 1),
+    'time_spent': np.random.normal(300, 100, n_sessions).clip(30, 1200),  # seconds
+    'pages_visited': np.random.randint(1, 20, n_sessions),
+    'cart_items': np.random.randint(0, 10, n_sessions),
+    'add_to_cart': np.random.randint(0, 5, n_sessions),
+    'checkout_initiated': np.random.binomial(1, 0.3, n_sessions),
+    'purchase_made': np.random.binomial(1, 0.2, n_sessions),
+    'review_text': [f"Review {i}: {'Good' if np.random.rand() > 0.5 else 'Bad'} experience" for i in range(n_sessions)]
+}
+
+df = pd.DataFrame(data)
+
+start_date = datetime.now() - timedelta(days=30)
+df['timestamp'] = [start_date + timedelta(minutes=random.randint(0, 30*24*60)) for _ in range(n_sessions)]
+
+df['user_age'] = np.random.randint(18, 65, n_sessions)
+df['user_gender'] = np.random.choice(['Male', 'Female'], n_sessions)
+df['purchase_hour'] = df['timestamp'].dt.hour
+
+df['device_type'] = np.random.choice(['Mobile', 'Desktop'], n_sessions)
+
+df['abandoned_cart'] = ((df['cart_items'] > 0) & (df['purchase_made'] == 0)).astype(int)
+
+df['loyalty_program'] = np.random.choice([0,1], n_sessions)
+
+df['social_media_influence'] = np.random.choice([0,1], n_sessions)
+df['avg_time_per_page'] = df['time_spent'] / df['pages_visited']
+df['cart_value'] = df['cart_items'] * df['add_to_cart']
+
+print("Performing sentiment analysis on reviews. This may take a while.")
+sentiment_analyzer = pipeline('sentiment-analysis')
+def sentiment_score(text):
+    res = sentiment_analyzer(text)[0]
+    return res['score'] if res['label'] == 'POSITIVE' else -res['score']
+sample_df = df.sample(n=200, random_state=42)
+sentiments = sample_df['review_text'].apply(sentiment_score)
+
+df['review_sentiment'] = 0
+df.loc[sample_df.index, 'review_sentiment'] = sentiments
+
+df['user_gender_enc'] = df['user_gender'].map({'Male':0, 'Female':1})
+df['device_type_enc'] = df['device_type'].map({'Desktop':0, 'Mobile':1})
+
+features = [
+    'time_spent', 'pages_visited', 'cart_items', 'add_to_cart',
+    'checkout_initiated', 'avg_time_per_page', 'cart_value', 'review_sentiment',
+    'user_age', 'user_gender_enc', 'purchase_hour', 'device_type_enc',
+    'abandoned_cart', 'loyalty_program', 'social_media_influence'
+]
+
+X = df[features]
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X)
+kmeans = KMeans(n_clusters=4, random_state=42)
+df['shopper_segment'] = kmeans.fit_predict(X_scaled)
+fig = px.scatter_3d(
+    df,
+    x='time_spent',
+    y='pages_visited',
+    z='cart_value',
+    color='shopper_segment',
+    title='Shopper Segments',
+    hover_data=['abandoned_cart', 'loyalty_program', 'social_media_influence']
+)
+fig.show()
+
+y = df['purchase_made']
+
+X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+
+param_grid = {
+    'n_estimators': [50, 100, 150],
+    'max_depth': [None, 10, 20],
+    'min_samples_split': [2, 5]
+}
+
+rf = RandomForestClassifier(random_state=42)
+grid_search = GridSearchCV(rf, param_grid, cv=3, scoring='accuracy', n_jobs=-1)
+print("Starting hyperparameter tuning for Random Forest (this may take a while)...")
+grid_search.fit(X_train, y_train)
+
+best_rf = grid_search.best_estimator_
+y_pred = best_rf.predict(X_test)
+
+accuracy = accuracy_score(y_test, y_pred)
+print(f"\nRandom Forest Model Accuracy: {accuracy:.2f}\n")
+
+print("Classification Report:")
+print(classification_report(y_test, y_pred))
+
+conf_matrix = confusion_matrix(y_test, y_pred)
+plt.figure(figsize=(6,5))
+sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues',
+            xticklabels=['No Purchase', 'Purchase'],
+            yticklabels=['No Purchase', 'Purchase'])
+plt.title('Confusion Matrix')
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.show()
+
+feat_importance = pd.DataFrame({
+    'feature': features,
+    'importance': best_rf.feature_importances_
+}).sort_values(by='importance', ascending=False)
+
+fig2 = go.Figure(data=[go.Bar(x=feat_importance['feature'], y=feat_importance['importance'])])
+fig2.update_layout(title='Feature Importance - Random Forest',
+                   xaxis_title='Features',
+                   yaxis_title='Importance')
+fig2.show()
+
+df.to_csv('shopper_analysis_results.csv', index=False)
+joblib.dump(best_rf, 'random_forest_model.pkl')
+print("Saved results to 'shopper_analysis_results.csv' and model to 'random_forest_model.pkl'.")
+
+
